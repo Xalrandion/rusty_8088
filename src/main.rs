@@ -4,7 +4,7 @@ use octet_reader::octet_reader::OctetReader;
 mod octet_reader;
 
 
-static FILE_PATH: &str = "/home/xalrandion/dev/rusty_8088/fixtures/listing_39";
+static FILE_PATH: &str = "/home/alexg/dev/rusty_8088/fixture/listing_0041_add_sub_cmp_jnz";
 // static WORD_LENGHT: u64 = 16;
 // static INST_MOV_REG_TO_REG: u8 = 0b00100010;
 // static INST_MOV_IMMEDIATE_TO_REG: u8 = 0b00001011;
@@ -72,12 +72,18 @@ struct Instruction {
     arg: Vec<Arg>
 }
 
+#[derive(PartialEq)]
+enum ImmediateSize {
+    Byte,
+    Word
+}
+
 struct Arg {
     name: String,
     is_address: bool,
     is_register: bool,
     is_address_calc: bool,
-    
+    immediate_size: Option<ImmediateSize>,
     addrs_calc_param: Vec<String>
 }
 
@@ -89,15 +95,15 @@ impl Instruction {
 
 impl Arg {
     fn new_register(name: &str) -> Self {
-        return  Self {name: name.into(), is_register: true, is_address: false, is_address_calc: false, addrs_calc_param: Vec::new() };
+        return  Self {name: name.into(), is_register: true, is_address: false, is_address_calc: false, addrs_calc_param: Vec::new(), immediate_size: None };
     }
 
-    fn new_immediate(name: String) -> Self {
-        return Self{ name: name, is_register: false, is_address: false, is_address_calc: false, addrs_calc_param: Vec::new()};
+    fn new_immediate(name: String, immediate_size: Option<ImmediateSize>) -> Self {
+        return Self{ name: name, is_register: false, is_address: false, is_address_calc: false, addrs_calc_param: Vec::new(), immediate_size: immediate_size};
     }
 
     fn new_addrs_calc(calc_params: Vec<String>) -> Self {
-        return  Self {name: String::new(), is_register: false, is_address: false, is_address_calc: true, addrs_calc_param: calc_params };
+        return  Self {name: String::new(), is_register: false, is_address: false, is_address_calc: true, addrs_calc_param: calc_params, immediate_size: None };
     }
 }
 
@@ -110,10 +116,18 @@ impl ToString for Instruction {
 
 impl ToString for Arg {
     fn to_string(&self) -> String {
-        if self.is_address_calc {
-            return format!("[{}]", self.addrs_calc_param.join(" + "));
+        let mut result = String::new();
+
+        if self.immediate_size.is_some() {
+            let imm_size_str = if *self.immediate_size.as_ref().unwrap() == ImmediateSize::Byte { "byte" } else { "word" };
+            result += &*format!("{} ", imm_size_str)
         }
-        return self.name.clone();
+        if self.is_address_calc {
+            result += &*format!("[{}]", self.addrs_calc_param.join(" + "));
+            return result
+        }
+        result += &*self.name.clone();
+        return result
     }
 }
 
@@ -128,7 +142,7 @@ fn get_register_name(registe_code: u8, is_wide: bool)  -> &'static str {
     return REGISTER_TABLE[usize::from( registe_code + (if is_wide { REG_CODE_BH +1 } else { 0 } ))]
 }
 
-fn decode_non_reg_rm_field(r_m: u8, disp: &Option<u16>) -> Arg {
+fn decode_non_reg_rm_field(r_m: u8, disp: &Option<u16>, is_mod_0: bool) -> Arg {
     let mut calc_args: Vec<String> = vec![];
     
     if r_m == 0b00000000 {
@@ -153,7 +167,7 @@ fn decode_non_reg_rm_field(r_m: u8, disp: &Option<u16>) -> Arg {
     if r_m == 0b00000101 {
         calc_args.push("di".into());
     }
-    if r_m == 0b00000110 {
+    if r_m == 0b00000110 && !is_mod_0 {
         calc_args.push("bp".into());
     }
     if r_m == 0b00000111 {
@@ -187,7 +201,7 @@ fn decode_imediate_to_register(word: u8, reader: &mut OctetReader) -> Result<Ins
 
     data.swap(0, 1);
     let data_value = u16::from_be_bytes(data); 
-    Ok(Instruction { mnemonic: "mov".into(), arg: vec![Arg::new_register(target_register), Arg::new_immediate(data_value.to_string())] })
+    Ok(Instruction { mnemonic: "mov".into(), arg: vec![Arg::new_register(target_register), Arg::new_immediate(data_value.to_string(), None)] })
 }
 
 
@@ -250,32 +264,38 @@ fn find_decoder_type_and_mnemonic_type(word: u8) -> Result<(DecoderType, Mnemoni
 }
 
 const MOD_FIELD_RM_IS_REG: u8  = 0b00000011;
-// const MOD_FIELD_NO_DISP: u8    = 0b00000000;
-// const MOD_FIELD_DISP_LOW: u8   = 0b00000001;
-// const MOD_FIELD_DISP_HIGH: u8  = 0b00000010;
+const MOD_FIELD_NO_DISP: u8    = 0b00000000;
+const MOD_FIELD_DISP_LOW: u8   = 0b00000001;
+const MOD_FIELD_DISP_HIGH: u8  = 0b00000010;
 
-// fn calc_disp_status(word2: u8) -> (bool, bool) { // has disp low, has disp high
-//     if word2 & MOD_FIELD_DISP_LOW == MOD_FIELD_DISP_LOW {
-//         return (true, false)
-//     }
-//     if word2 & MOD_FIELD_DISP_HIGH == MOD_FIELD_DISP_HIGH {
-//         return (true, true)
-//     }
-//     if word2 & MOD_FIELD_NO_DISP == MOD_FIELD_NO_DISP && word2 & 0b00000110 == 0b00000110 {
-//         return (true, true)
-//     }
-//     return (false, false)
-// }
+fn calc_disp_status(word2: u8, rm_field: u8) -> (bool, bool) { // has disp low, has disp high
+
+    if word2 & MOD_FIELD_RM_IS_REG == MOD_FIELD_RM_IS_REG {
+        return (false, false)
+    } 
+
+    if word2 & MOD_FIELD_DISP_LOW == MOD_FIELD_DISP_LOW {
+        return (true, false)
+    }
+    if word2 & MOD_FIELD_DISP_HIGH == MOD_FIELD_DISP_HIGH {
+        return (true, true)
+    }
+
+    if word2 & MOD_FIELD_NO_DISP == MOD_FIELD_NO_DISP && (rm_field >> 1 & 0b00000011 == 0b00000011 && rm_field << 7 == 0b00000000) {
+        return (true, true)
+    }
+    return (false, false)
+}
 
 fn calc_disp_value(reader: &mut OctetReader, does_have_disp_low: bool, does_have_disp_high: bool) -> Result<Option<u16>, String> {
     let mut disps: [u8; 2] = [0, 0];
-    if does_have_disp_low || does_have_disp_high {
+    if does_have_disp_low {
         disps[0] =  match  reader.read_next() {
             Ok(b) => b,
             Err(_) => { return Err("Unexpected EOF during File read".into())} 
         }; 
     }
-    if does_have_disp_high {
+    if does_have_disp_low && does_have_disp_high {
         disps[1] =  match  reader.read_next() {
             Ok(b) => b,
             Err(_) => { return Err("Unexpected EOF during File read".into())} 
@@ -289,9 +309,9 @@ fn calc_disp_value(reader: &mut OctetReader, does_have_disp_low: bool, does_have
 fn decode_arithmetic_op_mnemonic(field: u8) -> Result<String, String> {
 
     return  match  field {
-        0b00000000 => Ok("ADD".into()),
-        0b00000101 => Ok("SUP".into()),
-        0b00000111 => Ok("CMP".into()),
+        0b00000000 => Ok("add".into()),
+        0b00000101 => Ok("sub".into()),
+        0b00000111 => Ok("cmp".into()),
         _other => Err("Arithmetic op mnemonic not found".into())
     };
 }
@@ -304,15 +324,15 @@ fn decode_conditional_jump_op_mnemonic(field: u8) -> Result<String, String> {
 }
 
 fn decode_data_transfer_op_mnemonic(_field: u8) -> Result<String, String> {
-    return Ok("MOV".into())
+    return Ok("mov".into())
 }
 
 fn print_immedidate(number: u16, is_signed: bool) -> String {
     if !is_signed {
         return number.to_string()
     }
-    let is_negative = number & 0b1000000000000000 == number & 0b1000000000000000;
-    let signed_number: i16 = (number as i16) * if is_negative {-1} else {1};
+    let is_positive = number & 0b1000000000000000 == number & 0b1000000000000000;
+    let signed_number: i16 = (number as i16) * if is_positive {1} else {-1};
     return signed_number.to_string() 
 }
 
@@ -323,7 +343,10 @@ fn decode_immediate_to_mem_reg(mnemonic_type: MnemonicType, word: u8, reader: &m
         Err(_) => { return Err("Unexpected EOF during File read".into())} 
     };
     let is_wide = word & 0b00000001 == 0b00000001;
-    let is_signed = if mnemonic_type == MnemonicType::Arithmetic {word & 0b00000010 == 0b00000010} else {false}; 
+    let is_signed = if mnemonic_type == MnemonicType::Arithmetic {word & 0b00000010 == 0b00000010} else {false};
+    let is_to_reg = word2 >> 6 == MOD_FIELD_RM_IS_REG;
+
+    let (have_disp_low, have_disp_high) = calc_disp_status(word2 >> 6, word2 << 5 >> 5);
     
     let mnemonic_result = match mnemonic_type {
       MnemonicType::Arithmetic => decode_arithmetic_op_mnemonic(word2 << 2 >> 5),
@@ -336,15 +359,23 @@ fn decode_immediate_to_mem_reg(mnemonic_type: MnemonicType, word: u8, reader: &m
         Err(e) => return  Err(e)
     };
 
-    let data_value = match calc_disp_value(reader, true, is_wide) {
-        Ok(it) => Arg::new_immediate(print_immedidate(it.unwrap(), is_signed)),
+    let disp_value = if mnemonic_type == MnemonicType::DataTransfer {None} else {  match calc_disp_value(reader, have_disp_low, have_disp_high) {
+        Ok(it) => it,
+        Err(e) => return Err(e)
+    }};
+
+    let immediate_size = if !is_to_reg { Some(if is_wide {ImmediateSize::Word} else {ImmediateSize::Byte}) } else {None};
+    let data_value = match calc_disp_value(reader, true, is_wide && !is_signed) {
+        Ok(it) => Arg::new_immediate(print_immedidate(it.unwrap(), is_signed), immediate_size),
         Err(e) => return Err(e)
     };
 
-    let r_m_field = if word2 >> 6 == MOD_FIELD_RM_IS_REG {
+    
+
+    let r_m_field = if is_to_reg  {
         Arg::new_register(find_register_name(&word2, 5, is_wide))
     } else {
-        decode_non_reg_rm_field(word2 << 5 >> 5, &None)
+        decode_non_reg_rm_field(word2 << 5 >> 5, &disp_value, word2 >> 6 == MOD_FIELD_NO_DISP)
     };
     return Ok(Instruction::new_full(mnemonic, vec![r_m_field, data_value]));
 }
@@ -357,10 +388,12 @@ fn decode_reg_memory_to_either(mnemonic_type: MnemonicType, word: u8, reader: &m
     };
     let is_wide = word & 0b00000001 == 0b00000001;
     let reg_from = word & 0b00000010 == 0b00000010;
+    let is_reg_to_reg = word2 >> 6 == MOD_FIELD_RM_IS_REG;
+    let (have_disp_low, have_disp_high) = calc_disp_status(word2 >> 6, word2 << 5 >> 5);
     
     let mnemonic_result = match mnemonic_type {
-      MnemonicType::Arithmetic => decode_arithmetic_op_mnemonic(word2 << 2 >> 5),
-      MnemonicType::DataTransfer => decode_data_transfer_op_mnemonic(word2 << 2 >> 5),
+      MnemonicType::Arithmetic => decode_arithmetic_op_mnemonic(word << 2 >> 5),
+      MnemonicType::DataTransfer => decode_data_transfer_op_mnemonic(word << 2 >> 5),
       _default=> return Err("Unsuported mnemonic type".into())
     };
 
@@ -369,19 +402,19 @@ fn decode_reg_memory_to_either(mnemonic_type: MnemonicType, word: u8, reader: &m
         Err(e) => return  Err(e)
     };
 
-    let disp_value = match calc_disp_value(reader, true, is_wide) {
+    let disp_value = match calc_disp_value(reader, have_disp_low, have_disp_high) {
         Ok(it) => it,
         Err(e) => return Err(e)
     };
     
-    let r_m_field = if word2 >> 6 == MOD_FIELD_RM_IS_REG {
+    let r_m_field = if is_reg_to_reg  {
         Arg::new_register(find_register_name(&word2, 5, is_wide))
     } else {
-        decode_non_reg_rm_field(word2 << 5 >> 5, &disp_value)
+        decode_non_reg_rm_field(word2 << 5 >> 5, &disp_value, word2 >> 6 == MOD_FIELD_NO_DISP)
     };
     let reg_field = Arg::new_register(find_register_name(&word2, 2, is_wide));
 
-    let instr_args = if reg_from { vec![r_m_field, reg_field] } else { vec![reg_field, r_m_field] };
+    let instr_args = if reg_from  { vec![reg_field, r_m_field] } else { vec![r_m_field, reg_field] };
     return Ok(Instruction::new_full(mnemonic, instr_args));
 } 
 
@@ -395,7 +428,7 @@ fn decode_conditional_jump(word: u8, reader: &mut OctetReader) -> Result<Instruc
     };
 
     let data_value = match calc_disp_value(reader, true, false) {
-        Ok(it) => Arg::new_immediate(format!("{:#x}", it.unwrap())),
+        Ok(it) => Arg::new_immediate(format!("{:#x}", it.unwrap()), None),
         Err(e) => return Err(e)
     };
 
@@ -412,7 +445,7 @@ fn decode_memory_to_acc(word: u8, reader: &mut OctetReader) -> Result<Instructio
     };
 
     let acc_arg = Arg::new_register(if is_wide { "AX" } else { "AL" });
-    let addrs_arg = Arg::new_immediate(format!("{:#x}", disp_value));
+    let addrs_arg = Arg::new_immediate(format!("{:#x}", disp_value), None);
 
     let instr_args = if word & 0b10100000 == 0b10100000 {vec![acc_arg, addrs_arg] } else { vec![addrs_arg, acc_arg] };
 
@@ -421,13 +454,9 @@ fn decode_memory_to_acc(word: u8, reader: &mut OctetReader) -> Result<Instructio
 
 
 fn decode_imm_to_acc(word: u8, reader: &mut OctetReader) -> Result<Instruction, String> {
-    let word2 =  match  reader.read_next() {
-        Ok(b) => b,
-        Err(_) => { return Err("Unexpected EOF during File read".into())} 
-    };
     let is_wide = word & 0b00000001 == 0b00000001;
     
-    let mnemonic_result = decode_arithmetic_op_mnemonic(word2 << 2 >> 5);
+    let mnemonic_result = decode_arithmetic_op_mnemonic(word << 2 >> 5);
 
     let mnemonic = match mnemonic_result {
         Ok(it) => it, 
@@ -435,11 +464,11 @@ fn decode_imm_to_acc(word: u8, reader: &mut OctetReader) -> Result<Instruction, 
     };
 
     let data_value = match calc_disp_value(reader, true, is_wide) {
-        Ok(it) => Arg::new_immediate(it.unwrap().to_string()),
+        Ok(it) => Arg::new_immediate(it.unwrap().to_string(), None),
         Err(e) => return Err(e)
     };
 
-    let acc_arg = Arg::new_register(if is_wide { "AX" } else { "AL" });
+    let acc_arg = Arg::new_register(if is_wide { "ax" } else { "al" });
     return Ok(Instruction::new_full(mnemonic, vec![acc_arg, data_value]));
 }
 
@@ -467,6 +496,8 @@ fn main() {
 
     let mut read_done = false;
     let read_done_borrow  = &mut read_done;
+
+    println!("bits 16");
 
     while !*read_done_borrow
     {
