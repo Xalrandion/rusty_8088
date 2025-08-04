@@ -3,28 +3,8 @@ use std::{fs::File};
 use octet_reader::octet_reader::OctetReader;
 mod octet_reader;
 
-
 static FILE_PATH: &str = "/home/alexg/dev/rusty_8088/fixture/listing_0041_add_sub_cmp_jnz";
-// static WORD_LENGHT: u64 = 16;
-// static INST_MOV_REG_TO_REG: u8 = 0b00100010;
-// static INST_MOV_IMMEDIATE_TO_REG: u8 = 0b00001011;
 
-// static REG_CODE_AX: u8 = 0b00000000;
-// static REG_CODE_CX: u8 = 0b00000001;
-// static REG_CODE_DX: u8 = 0b00000010;
-// static REG_CODE_BX: u8 = 0b00000011;
-// static REG_CODE_SP: u8 = 0b00000100;
-// static REG_CODE_BP: u8 = 0b00000101;
-// static REG_CODE_SI: u8 = 0b00000110;
-// static REG_CODE_DI: u8 = 0b00000111;
-
-// static REG_CODE_AL: u8 = 0b00000000;
-// static REG_CODE_CL: u8 = 0b00000001;
-// static REG_CODE_DL: u8 = 0b00000010;
-// static REG_CODE_BL: u8 = 0b00000011;
-// static REG_CODE_AH: u8 = 0b00000100;
-// static REG_CODE_CH: u8 = 0b00000101;
-// static REG_CODE_DH: u8 = 0b00000110;
 static REG_CODE_BH: u8 = 0b00000111;
 
 const REGISTER_TABLE: [&str; 16] = ["al", "cl", "dl", "bl", "ah", "ch", "dh", "bh", 
@@ -78,10 +58,26 @@ enum ImmediateSize {
     Word
 }
 
+enum DecoderType {
+
+    ImmToMemReg,
+    RegMemoryToEither,
+    ImmediateToAcc,
+    Jump,
+    MemoryToAcc,
+    ImmToReg
+}
+
+#[derive(PartialEq)]
+enum MnemonicType {
+    DataTransfer,
+    Arithmetic,
+    ControlTransfer
+}
+
+
 struct Arg {
     name: String,
-    is_address: bool,
-    is_register: bool,
     is_address_calc: bool,
     immediate_size: Option<ImmediateSize>,
     addrs_calc_param: Vec<String>
@@ -95,15 +91,15 @@ impl Instruction {
 
 impl Arg {
     fn new_register(name: &str) -> Self {
-        return  Self {name: name.into(), is_register: true, is_address: false, is_address_calc: false, addrs_calc_param: Vec::new(), immediate_size: None };
+        return  Self {name: name.into(), is_address_calc: false, addrs_calc_param: Vec::new(), immediate_size: None };
     }
 
     fn new_immediate(name: String, immediate_size: Option<ImmediateSize>) -> Self {
-        return Self{ name: name, is_register: false, is_address: false, is_address_calc: false, addrs_calc_param: Vec::new(), immediate_size: immediate_size};
+        return Self{ name: name, is_address_calc: false, addrs_calc_param: Vec::new(), immediate_size: immediate_size};
     }
 
     fn new_addrs_calc(calc_params: Vec<String>) -> Self {
-        return  Self {name: String::new(), is_register: false, is_address: false, is_address_calc: true, addrs_calc_param: calc_params, immediate_size: None };
+        return  Self {name: String::new(), is_address_calc: true, addrs_calc_param: calc_params, immediate_size: None };
     }
 }
 
@@ -202,24 +198,6 @@ fn decode_imediate_to_register(word: u8, reader: &mut OctetReader) -> Result<Ins
     data.swap(0, 1);
     let data_value = u16::from_be_bytes(data); 
     Ok(Instruction { mnemonic: "mov".into(), arg: vec![Arg::new_register(target_register), Arg::new_immediate(data_value.to_string(), None)] })
-}
-
-
-enum DecoderType {
-
-    ImmToMemReg,
-    RegMemoryToEither,
-    ImmediateToAcc,
-    Jump,
-    MemoryToAcc,
-    ImmToReg
-}
-
-#[derive(PartialEq)]
-enum MnemonicType {
-    DataTransfer,
-    Arithmetic,
-    ControlTransfer
 }
 
 fn is_a_conditional_jump_op(word: u8) -> bool {
